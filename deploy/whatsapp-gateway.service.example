@@ -1,0 +1,15 @@
+[Unit]
+Description=CenterFlow WhatsApp Gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/whatsapp-gateway
+EnvironmentFile=/opt/whatsapp-gateway/.env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
