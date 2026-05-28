@@ -52,6 +52,14 @@ function sessionPath(instanceName) {
   return path.join(SESSIONS_DIR, instanceName);
 }
 
+/** "5599999999999:1@s.whatsapp.net" → "5599999999999" */
+function extractPhoneNumber(jid) {
+  if (!jid || typeof jid !== "string") return null;
+  const beforeAt = jid.includes("@") ? jid.slice(0, jid.indexOf("@")) : jid;
+  const colon = beforeAt.indexOf(":");
+  return colon >= 0 ? beforeAt.slice(0, colon) : beforeAt;
+}
+
 function webhookMetaPath(instanceName) {
   return path.join(sessionPath(instanceName), "webhook.json");
 }
@@ -266,20 +274,26 @@ async function startInstance(instanceName, webhookInput = null) {
       data.status = "connected";
       data.qr = null;
       data.restarting = false;
-      data.phone = sock.user?.id || null;
-      console.log(`[${instanceName}] conectado: ${data.phone}`);
+      const rawJid = sock.user?.id || null;
+      const phone = extractPhoneNumber(rawJid);
+      data.jid = rawJid;
+      data.phone = phone;
+      console.log(`[${instanceName}] conectado: ${phone || rawJid}`);
 
       await sendWebhook(instanceName, "CONNECTION_UPDATE", {
         state: "open",
         status: "open",
         connection: "open",
-        phone: data.phone,
-        phoneNumber: data.phone,
-        ownerJid: data.phone,
+        ownerJid: phone,
+        phone,
+        number: phone,
+        phoneNumber: phone,
+        jid: rawJid,
         instance: {
           instanceName,
           state: "open",
-          owner: data.phone,
+          owner: phone,
+          ownerJid: phone,
         },
       });
     }
