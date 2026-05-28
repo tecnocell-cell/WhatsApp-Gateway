@@ -1,0 +1,71 @@
+# whatsapp-gateway.service -- systemd unit para o WhatsApp Gateway (CT103)
+#
+# Instalacao:
+#   sudo cp whatsapp-gateway.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable whatsapp-gateway
+#   sudo systemctl start whatsapp-gateway
+#
+# Verificar:
+#   sudo systemctl status whatsapp-gateway
+#   sudo journalctl -u whatsapp-gateway -f
+#
+# Diagnostico do path do node:
+#   sudo -u wppgateway which node
+#   Se vazio: ajuste Environment=PATH abaixo com o path correto
+
+[Unit]
+Description=CenterFlow WhatsApp Gateway (Baileys)
+Documentation=https://github.com/WhiskeySockets/Baileys
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Usuario dedicado -- criar com:
+#   sudo adduser --system --group --no-create-home wppgateway
+User=wppgateway
+Group=wppgateway
+
+WorkingDirectory=/opt/whatsapp-gateway
+
+# PATH explicito: cobre node instalado via apt (/usr/bin), n/fnm (/usr/local/bin)
+# Se node foi instalado via NVM para um usuario especifico (ex: root ou gestor),
+# adicione o path NVM aqui, ex: /root/.nvm/versions/node/v20.x.x/bin
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+# /usr/bin/env node usa o PATH acima -- funciona com apt, n, fnm ou NVM global
+ExecStart=/usr/bin/env node server.js
+
+# Variaveis de ambiente (arquivo separado -- NUNCA commitar)
+# Prefixo "-" torna opcional: service sobe mesmo sem .env
+# Em producao, .env DEVE existir com API_KEY definida.
+EnvironmentFile=-/opt/whatsapp-gateway/.env
+
+# Restart automatico
+Restart=always
+RestartSec=3s
+# Apos 5 crashes em 60s o systemd para de tentar -- resetar com:
+#   sudo systemctl reset-failed whatsapp-gateway && sudo systemctl start whatsapp-gateway
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+# Limites de recursos
+# ~5-15 MB por instancia Baileys. Para 100 tenants: 512M ok. Para 200+: aumente para 1G.
+MemoryMax=512M
+LimitNOFILE=65536
+
+# Hardening de seguranca
+ReadWritePaths=/opt/whatsapp-gateway
+ReadOnlyPaths=/usr /etc/ssl /etc/ca-certificates
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+# Logs via journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=whatsapp-gateway
+
+[Install]
+WantedBy=multi-user.target

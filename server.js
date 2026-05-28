@@ -21,7 +21,7 @@ const API_KEY = process.env.API_KEY;
 const SESSIONS_DIR =
   process.env.SESSIONS_DIR || path.join(process.cwd(), "sessions");
 
-const DEFAULT_WEBHOOK_EVENTS = ["QRCODE_UPDATED", "CONNECTION_UPDATE"];
+const DEFAULT_WEBHOOK_EVENTS = ["QRCODE_UPDATED", "CONNECTION_UPDATE", "MESSAGES_UPSERT"];
 
 /** Códigos de desconexão transitória — reinicia sem avisar o Financeiro. */
 const TRANSIENT_DISCONNECT_CODES = new Set([
@@ -111,6 +111,9 @@ function shouldSendWebhook(webhook, event) {
   if (!webhook?.url) return false;
   if (!webhook.byEvents) return true;
   const normalized = String(event).toUpperCase().replace(/\./g, "_");
+  // MESSAGES_UPSERT sempre entregue — sessoes antigas nao tem esse evento na lista
+  // configurada no webhook.json, mas precisam recebe-lo sem reconexao obrigatoria.
+  if (normalized === "MESSAGES_UPSERT") return true;
   return (webhook.events || DEFAULT_WEBHOOK_EVENTS).includes(normalized);
 }
 
@@ -366,6 +369,46 @@ async function startInstance(instanceName, webhookInput = null) {
     }
   });
 
+  // ── Recebimento de mensagens (Fase 3) ────────────────────────────────────────
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    // Apenas eventos de notificacao em tempo real — ignorar historico/sincronizacao
+    if (type !== "notify") return;
+
+    for (const msg of messages) {
+      // Ignorar mensagens enviadas pelo proprio numero conectado
+      if (msg.key.fromMe) continue;
+
+      // Ignorar mensagens sem conteudo (ex: reacoes, status visto)
+      if (!msg.message) continue;
+
+      // Extrair texto de todos os formatos suportados
+      const body =
+        msg.message?.conversation ||
+        msg.message?.extendedTextMessage?.text ||
+        msg.message?.imageMessage?.caption ||
+        msg.message?.videoMessage?.caption ||
+        "";
+
+      // Extrair e normalizar numero do remetente
+      const remoteJid = msg.key.remoteJid || "";
+      const fromNumber = extractPhoneNumber(remoteJid);
+
+      console.log(
+        `[${instanceName}] mensagem recebida de ${fromNumber || remoteJid}: ${body.slice(0, 120)}`
+      );
+
+      await sendWebhook(instanceName, "MESSAGES_UPSERT", {
+        key: msg.key,
+        message: msg.message,
+        body,
+        text: body,
+        from: remoteJid,
+        fromNumber,
+        timestamp: msg.messageTimestamp,
+      });
+    }
+  });
+
   return data;
 }
 
@@ -525,9 +568,9 @@ app.delete("/instance/delete/:instanceName", auth, async (req, res) => {
 
 app.listen(PORT, "0.0.0.0", async () => {
   console.log(`WhatsApp Gateway em http://0.0.0.0:${PORT}`);
-  console.log(`Sessões: ${SESSIONS_DIR}`);
+  console.log(`Sessoes: ${SESSIONS_DIR}`);
   if (!API_KEY) {
-    console.warn("AVISO: API_KEY não definida — todas as rotas retornarão 401.");
+    console.warn("AVISO: API_KEY nao definida -- todas as rotas retornarao 401.");
   }
   await restorePersistedSessions();
 });
