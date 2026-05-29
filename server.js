@@ -428,20 +428,6 @@ async function startInstance(instanceName, webhookInput = null) {
       if (remoteJid.includes("@broadcast")) continue; // broadcasts
       if (remoteJid.startsWith("status@"))  continue; // status
 
-      // ── Diagnostico temporario: logar campos do remetente para depuracao ───
-      // REMOVER apos confirmar que fromNumber esta correto em producao
-      const diagKeys = Object.keys(msg).filter(k =>
-        /jid|participant|sender|author|remote/i.test(k)
-      );
-      console.log(`[${instanceName}] DIAG msg.key:`, JSON.stringify(msg.key));
-      if (participant) console.log(`[${instanceName}] DIAG participant:`, participant);
-      if (msg.pushName) console.log(`[${instanceName}] DIAG pushName:`, msg.pushName);
-      if (diagKeys.length) console.log(`[${instanceName}] DIAG msg fields:`, diagKeys);
-      if (msg.message?.messageContextInfo) {
-        console.log(`[${instanceName}] DIAG messageContextInfo keys:`,
-          Object.keys(msg.message.messageContextInfo));
-      }
-
       // ── Extrair JID real do remetente ──────────────────────────────────────
       // remoteJid pode ser @lid (LID interno do WhatsApp Privacy).
       // Nesse caso, o numero real esta em msg.key.participant ou msg.participant.
@@ -645,6 +631,34 @@ app.delete("/instance/delete/:instanceName", auth, async (req, res) => {
     error: false,
     response: { message: "Instance deleted" },
   });
+});
+
+// POST /message/sendText/:instanceName
+// Body: { number: "559481406316", text: "mensagem" }
+app.post("/message/sendText/:instanceName", auth, async (req, res) => {
+  const { instanceName } = req.params;
+  const { number, text } = req.body || {};
+
+  if (!number || !text) {
+    return res.status(400).json({ error: "number and text are required" });
+  }
+
+  const s = sessions.get(instanceName);
+  if (!s?.sock) {
+    return res.status(404).json({ error: "Instance not connected", instanceName });
+  }
+
+  // Normaliza para JID completo
+  const jid = String(number).includes("@") ? String(number) : `${number}@s.whatsapp.net`;
+
+  try {
+    await s.sock.sendMessage(jid, { text: String(text) });
+    console.log(`[${instanceName}] sendText -> ${number}: ${String(text).slice(0, 80)}`);
+    res.json({ status: "SUCCESS" });
+  } catch (err) {
+    console.error(`[${instanceName}] sendText erro:`, err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, "0.0.0.0", async () => {
