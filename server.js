@@ -381,6 +381,14 @@ async function startInstance(instanceName, webhookInput = null) {
       // Ignorar mensagens sem conteudo (ex: reacoes, status visto)
       if (!msg.message) continue;
 
+      // Extrair e normalizar numero do remetente
+      const remoteJid = msg.key.remoteJid || "";
+
+      // Ignorar grupos, status e broadcasts — nao enviar para o Financeiro
+      if (remoteJid.includes("@g.us")) continue;
+      if (remoteJid.includes("@broadcast")) continue;
+      if (remoteJid.startsWith("status@")) continue;
+
       // Extrair texto de todos os formatos suportados
       const body =
         msg.message?.conversation ||
@@ -388,9 +396,6 @@ async function startInstance(instanceName, webhookInput = null) {
         msg.message?.imageMessage?.caption ||
         msg.message?.videoMessage?.caption ||
         "";
-
-      // Extrair e normalizar numero do remetente
-      const remoteJid = msg.key.remoteJid || "";
       const fromNumber = extractPhoneNumber(remoteJid);
 
       console.log(
