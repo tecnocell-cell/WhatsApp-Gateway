@@ -72,14 +72,15 @@ function isValidUserJid(jid) {
 /**
  * Extrai o JID real do remetente de uma mensagem Baileys.
  *
- * Problema: em conexoes recentes do WhatsApp, msg.key.remoteJid pode ser
- * um LID privado (ex: 160065025736905@lid) em vez do telefone real.
- * Nesses casos, msg.key.participant ou msg.participant contem o JID correto.
+ * Problema: msg.key.remoteJid pode ser um LID (ex: 160065025736905@lid).
+ * Nesse caso o numero real pode estar em msg.key.remoteJidAlt ou participant.
  *
  * Ordem de tentativa:
- *   1. msg.key.participant  (remetente em grupos e alguns DMs LID)
- *   2. msg.participant      (campo alternativo do Baileys)
- *   3. msg.key.remoteJid    (DMs normais: "5594981406316@s.whatsapp.net")
+ *   1. msg.key.participant    (grupos e alguns DMs LID)
+ *   2. msg.participant        (campo alternativo do Baileys)
+ *   3. msg.key.remoteJidAlt   (campo alt presente quando remoteJid e @lid)
+ *   4. msg.key.participantAlt (campo alt adicional do Baileys)
+ *   5. msg.key.remoteJid      (DMs normais: "5594981406316@s.whatsapp.net")
  *
  * Retorna o primeiro JID valido (@s.whatsapp.net ou @c.us), ou null.
  */
@@ -87,6 +88,8 @@ function extractSenderJid(msg) {
   const candidates = [
     msg.key?.participant,
     msg.participant,
+    msg.key?.remoteJidAlt,
+    msg.key?.participantAlt,
     msg.key?.remoteJid,
   ].filter(Boolean);
 
@@ -473,15 +476,16 @@ async function startInstance(instanceName, webhookInput = null) {
       );
 
       await sendWebhook(instanceName, "MESSAGES_UPSERT", {
-        key:            msg.key,
-        message:        msg.message,
+        key:               msg.key,
+        message:           msg.message,
         body,
-        text:           body,
-        from:           senderJid,          // JID real do remetente
-        fromNumber,                          // Numero normalizado (so digitos)
-        rawRemoteJid:   remoteJid,           // remoteJid original (pode ser @lid)
-        rawParticipant: participant || null,  // participant original
-        timestamp:      msg.messageTimestamp,
+        text:              body,
+        from:              senderJid,                        // JID real do remetente
+        fromNumber,                                          // Numero normalizado (so digitos)
+        rawRemoteJid:      remoteJid,                        // remoteJid original (pode ser @lid)
+        rawRemoteJidAlt:   msg.key?.remoteJidAlt || null,    // alt presente quando remoteJid e @lid
+        rawParticipant:    participant || null,               // participant original
+        timestamp:         msg.messageTimestamp,
       });
     }
   });
