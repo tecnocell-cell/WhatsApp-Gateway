@@ -10,6 +10,7 @@ import {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  downloadMediaMessage,
 } from "@whiskeysockets/baileys";
 
 const app = express();
@@ -449,16 +450,80 @@ async function startInstance(instanceName, webhookInput = null) {
         continue;
       }
 
+      // ── Detectar tipo de mensagem ──────────────────────────────────────────
+      const msgContent = msg.message;
+      let messageType = "text";
+      let caption     = null;
+
+      if (msgContent?.audioMessage)    messageType = "audio";
+      else if (msgContent?.imageMessage)    { messageType = "image";    caption = msgContent.imageMessage.caption    || null; }
+      else if (msgContent?.videoMessage)    { messageType = "video";    caption = msgContent.videoMessage.caption    || null; }
+      else if (msgContent?.documentMessage) { messageType = "document"; caption = msgContent.documentMessage.caption || null; }
+
       // ── Extrair texto ──────────────────────────────────────────────────────
       const body =
-        msg.message?.conversation ||
-        msg.message?.extendedTextMessage?.text ||
-        msg.message?.imageMessage?.caption ||
-        msg.message?.videoMessage?.caption ||
+        msgContent?.conversation ||
+        msgContent?.extendedTextMessage?.text ||
+        caption ||
         "";
 
+      // ── Download de mídia (audio/image/document) ───────────────────────────
+      let mediaInfo = null;
+      if (messageType !== "text") {
+        try {
+          const mediaDir = path.join(SESSIONS_DIR, instanceName, "media");
+          fs.mkdirSync(mediaDir, { recursive: true });
+
+          const mediaMsg  = msgContent?.[messageType + "Message"];
+          const mimetype  = mediaMsg?.mimetype || "application/octet-stream";
+          const filename  = mediaMsg?.fileName || null;
+
+          // Determinar extensão pelo mimetype
+          const extMap = {
+            "audio/ogg":                "ogg",
+            "audio/ogg; codecs=opus":   "ogg",
+            "audio/mp4":                "m4a",
+            "audio/mpeg":               "mp3",
+            "image/jpeg":               "jpg",
+            "image/png":                "png",
+            "image/webp":               "webp",
+            "video/mp4":                "mp4",
+            "application/pdf":          "pdf",
+          };
+          const baseMime = mimetype.split(";")[0].trim();
+          const ext = extMap[baseMime] || extMap[mimetype] || "bin";
+          const safeTs = String(msg.messageTimestamp || Date.now());
+          const localFile = path.join(mediaDir, `${safeTs}-${fromNumber}.${ext}`);
+
+          const buffer = await downloadMediaMessage(
+            msg,
+            "buffer",
+            {},
+            { logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } }
+          );
+
+          fs.writeFileSync(localFile, buffer);
+
+          // localPath relativo à pasta sessions/
+          const localPath = path.relative(SESSIONS_DIR, localFile);
+
+          mediaInfo = {
+            mimetype,
+            filename: filename || path.basename(localFile),
+            localPath,
+            caption,
+          };
+
+          console.log(`[${instanceName}] mídia salva: ${localPath} (${messageType} ${mimetype})`);
+        } catch (err) {
+          console.error(`[${instanceName}] erro ao baixar mídia (${messageType}):`, err.message);
+          // Continua sem mídia — não bloqueia o webhook
+          mediaInfo = { mimetype: null, filename: null, localPath: null, caption };
+        }
+      }
+
       console.log(
-        `[${instanceName}] mensagem de ${fromNumber} (jid=${senderJid}): ${body.slice(0, 120)}`
+        `[${instanceName}] mensagem de ${fromNumber} (jid=${senderJid}) tipo=${messageType}: ${body.slice(0, 120)}`
       );
 
       await sendWebhook(instanceName, "MESSAGES_UPSERT", {
@@ -466,6 +531,8 @@ async function startInstance(instanceName, webhookInput = null) {
         message:           msg.message,
         body,
         text:              body,
+        messageType,
+        media:             mediaInfo,
         from:              senderJid,                        // JID real do remetente
         fromNumber,                                          // Numero normalizado (so digitos)
         rawRemoteJid:      remoteJid,                        // remoteJid original (pode ser @lid)
@@ -552,6 +619,7 @@ app.post("/instance/create", auth, async (req, res) => {
     qrcode: s.qr ? { base64: s.qr } : { count: 0 },
   });
 });
+
 
 app.get("/instance/connect/:instanceName", auth, async (req, res) => {
   const { instanceName } = req.params;
