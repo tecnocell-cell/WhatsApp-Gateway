@@ -398,8 +398,14 @@ async function startInstance(instanceName, webhookInput = null) {
         "";
       const fromNumber = extractPhoneNumber(remoteJid);
 
+      // Ignorar JIDs que nao sao numeros de telefone validos (newsletters, listas, etc.)
+      if (!fromNumber || !/^\d{8,15}$/.test(fromNumber)) {
+        console.log(`[${instanceName}] ignorando JID sem numero valido: ${remoteJid}`);
+        continue;
+      }
+
       console.log(
-        `[${instanceName}] mensagem recebida de ${fromNumber || remoteJid}: ${body.slice(0, 120)}`
+        `[${instanceName}] mensagem recebida de ${fromNumber}: ${body.slice(0, 120)}`
       );
 
       await sendWebhook(instanceName, "MESSAGES_UPSERT", {
