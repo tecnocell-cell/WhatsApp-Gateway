@@ -52,12 +52,48 @@ function sessionPath(instanceName) {
   return path.join(SESSIONS_DIR, instanceName);
 }
 
-/** "5599999999999:1@s.whatsapp.net" → "5599999999999" */
+/** "5599999999999:1@s.whatsapp.net" ou "5599999999999@s.whatsapp.net" → "5599999999999" */
 function extractPhoneNumber(jid) {
   if (!jid || typeof jid !== "string") return null;
   const beforeAt = jid.includes("@") ? jid.slice(0, jid.indexOf("@")) : jid;
   const colon = beforeAt.indexOf(":");
   return colon >= 0 ? beforeAt.slice(0, colon) : beforeAt;
+}
+
+/**
+ * Retorna true apenas para JIDs de usuario real (telefone).
+ * Rejeita: @lid, @g.us, @broadcast, newsletter, status@
+ */
+function isValidUserJid(jid) {
+  if (!jid || typeof jid !== "string") return false;
+  return jid.endsWith("@s.whatsapp.net") || jid.endsWith("@c.us");
+}
+
+/**
+ * Extrai o JID real do remetente de uma mensagem Baileys.
+ *
+ * Problema: em conexoes recentes do WhatsApp, msg.key.remoteJid pode ser
+ * um LID privado (ex: 160065025736905@lid) em vez do telefone real.
+ * Nesses casos, msg.key.participant ou msg.participant contem o JID correto.
+ *
+ * Ordem de tentativa:
+ *   1. msg.key.participant  (remetente em grupos e alguns DMs LID)
+ *   2. msg.participant      (campo alternativo do Baileys)
+ *   3. msg.key.remoteJid    (DMs normais: "5594981406316@s.whatsapp.net")
+ *
+ * Retorna o primeiro JID valido (@s.whatsapp.net ou @c.us), ou null.
+ */
+function extractSenderJid(msg) {
+  const candidates = [
+    msg.key?.participant,
+    msg.participant,
+    msg.key?.remoteJid,
+  ].filter(Boolean);
+
+  for (const jid of candidates) {
+    if (isValidUserJid(jid)) return jid;
+  }
+  return null;
 }
 
 function webhookMetaPath(instanceName) {
@@ -381,41 +417,71 @@ async function startInstance(instanceName, webhookInput = null) {
       // Ignorar mensagens sem conteudo (ex: reacoes, status visto)
       if (!msg.message) continue;
 
-      // Extrair e normalizar numero do remetente
-      const remoteJid = msg.key.remoteJid || "";
+      const remoteJid  = msg.key?.remoteJid  || "";
+      const participant = msg.key?.participant || msg.participant || "";
 
-      // Ignorar grupos, status e broadcasts — nao enviar para o Financeiro
-      if (remoteJid.includes("@g.us")) continue;
-      if (remoteJid.includes("@broadcast")) continue;
-      if (remoteJid.startsWith("status@")) continue;
+      // ── Filtros obrigatorios ────────────────────────────────────────────────
+      if (remoteJid.includes("@g.us"))      continue; // grupos
+      if (remoteJid.includes("@broadcast")) continue; // broadcasts
+      if (remoteJid.startsWith("status@"))  continue; // status
 
-      // Extrair texto de todos os formatos suportados
+      // ── Diagnostico temporario: logar campos do remetente para depuracao ───
+      // REMOVER apos confirmar que fromNumber esta correto em producao
+      const diagKeys = Object.keys(msg).filter(k =>
+        /jid|participant|sender|author|remote/i.test(k)
+      );
+      console.log(`[${instanceName}] DIAG msg.key:`, JSON.stringify(msg.key));
+      if (participant) console.log(`[${instanceName}] DIAG participant:`, participant);
+      if (msg.pushName) console.log(`[${instanceName}] DIAG pushName:`, msg.pushName);
+      if (diagKeys.length) console.log(`[${instanceName}] DIAG msg fields:`, diagKeys);
+      if (msg.message?.messageContextInfo) {
+        console.log(`[${instanceName}] DIAG messageContextInfo keys:`,
+          Object.keys(msg.message.messageContextInfo));
+      }
+
+      // ── Extrair JID real do remetente ──────────────────────────────────────
+      // remoteJid pode ser @lid (LID interno do WhatsApp Privacy).
+      // Nesse caso, o numero real esta em msg.key.participant ou msg.participant.
+      const senderJid = extractSenderJid(msg);
+
+      if (!senderJid) {
+        // JID invalido ou LID sem participant — nao enviar webhook ainda
+        console.log(
+          `[${instanceName}] sender invalido/lid: remoteJid=${remoteJid} participant=${participant || "n/a"}`
+        );
+        continue;
+      }
+
+      // ── Extrair numero de telefone do JID valido ───────────────────────────
+      const fromNumber = extractPhoneNumber(senderJid);
+
+      if (!fromNumber || !/^\d{8,15}$/.test(fromNumber)) {
+        console.log(`[${instanceName}] ignorando JID sem numero valido: ${senderJid}`);
+        continue;
+      }
+
+      // ── Extrair texto ──────────────────────────────────────────────────────
       const body =
         msg.message?.conversation ||
         msg.message?.extendedTextMessage?.text ||
         msg.message?.imageMessage?.caption ||
         msg.message?.videoMessage?.caption ||
         "";
-      const fromNumber = extractPhoneNumber(remoteJid);
-
-      // Ignorar JIDs que nao sao numeros de telefone validos (newsletters, listas, etc.)
-      if (!fromNumber || !/^\d{8,15}$/.test(fromNumber)) {
-        console.log(`[${instanceName}] ignorando JID sem numero valido: ${remoteJid}`);
-        continue;
-      }
 
       console.log(
-        `[${instanceName}] mensagem recebida de ${fromNumber}: ${body.slice(0, 120)}`
+        `[${instanceName}] mensagem de ${fromNumber} (jid=${senderJid}): ${body.slice(0, 120)}`
       );
 
       await sendWebhook(instanceName, "MESSAGES_UPSERT", {
-        key: msg.key,
-        message: msg.message,
+        key:            msg.key,
+        message:        msg.message,
         body,
-        text: body,
-        from: remoteJid,
-        fromNumber,
-        timestamp: msg.messageTimestamp,
+        text:           body,
+        from:           senderJid,          // JID real do remetente
+        fromNumber,                          // Numero normalizado (so digitos)
+        rawRemoteJid:   remoteJid,           // remoteJid original (pode ser @lid)
+        rawParticipant: participant || null,  // participant original
+        timestamp:      msg.messageTimestamp,
       });
     }
   });
