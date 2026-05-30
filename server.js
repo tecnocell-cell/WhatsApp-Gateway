@@ -38,15 +38,73 @@ fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 /** @type {Map<string, SessionData>} */
 const sessions = new Map();
 
-function auth(req, res, next) {
-  const key =
+function extractApiKey(req) {
+  return (
     req.headers.apikey ||
     req.headers["api-key"] ||
-    req.headers.authorization?.replace(/^Bearer\s+/i, "");
+    req.headers.authorization?.replace(/^Bearer\s+/i, "")
+  );
+}
+
+function auth(req, res, next) {
+  const key = extractApiKey(req);
   if (!API_KEY || key !== API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   next();
+}
+
+/** Mesma chave que auth, mas 403 (endpoint de mídia). */
+function mediaAuth(req, res, next) {
+  const key = extractApiKey(req);
+  if (!API_KEY || key !== API_KEY) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  next();
+}
+
+const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9._-]+$/;
+
+function isSafePathSegment(segment) {
+  if (!segment || typeof segment !== "string") return false;
+  if (segment === "." || segment === "..") return false;
+  if (segment.includes("/") || segment.includes("\\")) return false;
+  if (path.isAbsolute(segment)) return false;
+  return SAFE_PATH_SEGMENT.test(segment);
+}
+
+function resolveMediaFile(instanceName, filename) {
+  if (!isSafePathSegment(instanceName) || !isSafePathSegment(filename)) {
+    return null;
+  }
+
+  const mediaDir = path.resolve(SESSIONS_DIR, instanceName, "media");
+  const filePath = path.resolve(mediaDir, filename);
+  const relative = path.relative(mediaDir, filePath);
+
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+
+  return filePath;
+}
+
+const MEDIA_EXT_MIME = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  ogg: "audio/ogg",
+  m4a: "audio/mp4",
+  mp3: "audio/mpeg",
+  mp4: "video/mp4",
+  pdf: "application/pdf",
+  bin: "application/octet-stream",
+};
+
+function mimeFromFilename(filename) {
+  const ext = path.extname(filename).slice(1).toLowerCase();
+  return MEDIA_EXT_MIME[ext] || "application/octet-stream";
 }
 
 function sessionPath(instanceName) {
@@ -698,6 +756,35 @@ app.delete("/instance/delete/:instanceName", auth, async (req, res) => {
     status: "SUCCESS",
     error: false,
     response: { message: "Instance deleted" },
+  });
+});
+
+// GET /media/:instanceName/:filename — arquivo em SESSIONS_DIR/{instance}/media/
+app.get("/media/:instanceName/:filename", mediaAuth, (req, res) => {
+  const { instanceName, filename } = req.params;
+  const filePath = resolveMediaFile(instanceName, filename);
+
+  if (!filePath) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  if (!stat.isFile()) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  res.setHeader("Content-Type", mimeFromFilename(filename));
+  res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+  res.sendFile(filePath, (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).json({ error: "Not found" });
+    }
   });
 });
 
